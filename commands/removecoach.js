@@ -48,19 +48,25 @@ module.exports = {
 
         // Check if the coach is assigned to ANY future sessions (claimed or unclaimed)
         const now = new Date().toISOString();
-        const assignedSession = await db.get(
-            `SELECT id FROM sessions
-             WHERE datetime > ?
-             AND (
-                claimedCoach = ?
-                OR (isClaimed = 0 AND availableCoaches LIKE '%"' || ? || '"%')
-             )
-             LIMIT 1`,
-            [now, coachIdToRemove, coachIdToRemove]
+        const futureSessions = await db.all(
+            `SELECT id, claimedCoach, availableCoaches FROM sessions
+             WHERE datetime > ?`,
+            [now]
         );
 
-        if (assignedSession) {
-            logger.warn(`Attempted to remove coach ${coachIdToRemove} who is assigned to future session ${assignedSession.id}.`);
+        let isCoachAssigned = false;
+        let assignedSessionId = null;
+        for (const session of futureSessions) {
+            const availableCoaches = JSON.parse(session.availableCoaches);
+            if (session.claimedCoach === coachIdToRemove || availableCoaches.includes(coachIdToRemove)) {
+                isCoachAssigned = true;
+                assignedSessionId = session.id;
+                break;
+            }
+        }
+
+        if (isCoachAssigned) {
+            logger.warn(`Attempted to remove coach ${coachIdToRemove} who is assigned to future session ${assignedSessionId}.`);
             await i.update({
                 content: 'This coach cannot be removed because they are assigned to at least one upcoming session (either claimed or unclaimed). Please reassign or delete those sessions first.',
                 components: [],

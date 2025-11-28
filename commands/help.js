@@ -2,6 +2,7 @@
 const { SlashCommandBuilder, EmbedBuilder, StringSelectMenuBuilder, ActionRowBuilder, ComponentType } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
+const logger = require('../utils/logger');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -33,7 +34,7 @@ module.exports = {
             .setPlaceholder('Choose a command...')
             .addOptions(
                 commandsData.map(cmd => {
-                    const isAdmin = (cmd.default_member_permissions === '0'); // '0' means admin permissions
+                    const isAdmin = cmd.default_member_permissions && (parseInt(cmd.default_member_permissions) & 0x8) === 0x8;
                     return {
                         label: `/${cmd.name}`,
                         description: cmd.description.slice(0, 100),

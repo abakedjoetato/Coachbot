@@ -1,11 +1,10 @@
 // database/database.js
-const sqlite3 = require('sqlite3').verbose();
+const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 const logger = require('../utils/logger');
 
 const dbPath = path.join(__dirname, 'coaching.db');
-
 let db;
 
 async function openDb() {
@@ -31,26 +30,10 @@ async function closeDb() {
   }
 }
 
-// Helper functions for database operations
-async function get(query, params) {
-  const database = await openDb();
-  return database.get(query, params);
-}
-
-async function all(query, params) {
-  const database = await openDb();
-  return database.all(query, params);
-}
-
-async function run(query, params) {
-  const database = await openDb();
-  return database.run(query, params);
-}
-
 module.exports = {
   openDb,
   closeDb,
-  get,
-  all,
-  run,
+  get: (query, params) => db.get(query, params),
+  all: (query, params) => db.all(query, params),
+  run: (query, params) => db.run(query, params),
 };
