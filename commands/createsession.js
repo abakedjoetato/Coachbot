@@ -18,6 +18,7 @@ module.exports = {
         .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
     async execute(interaction) {
         const interactionId = uuidv4();
+        const sessionData = {};
 
         try {
             await interaction.deferReply({ ephemeral: true });
@@ -27,22 +28,23 @@ module.exports = {
                 return interaction.editReply({ content: 'You must add at least one coach before creating a session. Use `/addcoach`.' });
             }
 
-            const duration = await promptForDuration(interaction, interactionId);
-            if (duration === null) return;
+            sessionData.duration = await promptForDuration(interaction, interactionId);
+            if (sessionData.duration === null) return;
 
             const date = await promptForDate(interaction, interactionId);
             if (date === null) return;
+            sessionData.date = date;
 
-            const time = await promptForTime(interaction, interactionId);
-            if (time === null) return;
+            sessionData.time = await promptForTime(interaction, interactionId);
+            if (sessionData.time === null) return;
 
-            const title = await promptForTitle(interaction, interactionId);
-            if (title === null) return;
+            sessionData.title = await promptForTitle(interaction, interactionId);
+            if (sessionData.title === null) return;
 
-            const selectedCoachIds = await promptForCoaches(interaction, interactionId, coaches);
-            if (selectedCoachIds === null) return;
+            sessionData.selectedCoachIds = await promptForCoaches(interaction, interactionId, coaches);
+            if (sessionData.selectedCoachIds === null) return;
 
-            const sessionDateTime = new Date(Date.UTC(date.year, date.month, date.day, time.hour, time.minute));
+            const sessionDateTime = new Date(Date.UTC(sessionData.date.year, sessionData.date.month, sessionData.date.day, sessionData.time.hour, sessionData.time.minute));
 
             if (sessionDateTime < new Date()) {
                 logger.warn(`User ${interaction.user.tag} attempted to create a session in the past for ${sessionDateTime.toISOString()}`);
@@ -50,9 +52,9 @@ module.exports = {
             }
 
             const event = await interaction.guild.scheduledEvents.create({
-                name: title,
+                name: sessionData.title,
                 scheduledStartTime: sessionDateTime,
-                scheduledEndTime: new Date(sessionDateTime.getTime() + duration * 60000),
+                scheduledEndTime: new Date(sessionDateTime.getTime() + sessionData.duration * 60000),
                 privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
                 entityType: GuildScheduledEventEntityType.External,
                 entityMetadata: { location: '1-on-1 Coaching' }
@@ -60,18 +62,23 @@ module.exports = {
 
             await db.run(
                 `INSERT INTO sessions (datetime, duration_minutes, title, availableCoaches, guildScheduledEventId) VALUES (?, ?, ?, ?, ?)`,
-                [sessionDateTime.toISOString(), duration, title, JSON.stringify(selectedCoachIds), event.id]
+                [sessionDateTime.toISOString(), sessionData.duration, sessionData.title, JSON.stringify(sessionData.selectedCoachIds), event.id]
             );
 
-            logger.info(`Session created by ${interaction.user.tag}: ${title} at ${sessionDateTime.toISOString()}`);
+            logger.info(`Session created by ${interaction.user.tag}: ${sessionData.title} at ${sessionDateTime.toISOString()}`);
             await interaction.editReply({ content: '✅ Successfully created the new coaching session and scheduled the event!', components: [] });
 
         } catch (error) {
-            logger.error('Error in /createsession command:', error);
+            logger.error({
+                msg: 'Error in /createsession command',
+                error,
+                user: interaction.user.tag,
+                guild: interaction.guild.id,
+            });
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({ content: 'An unexpected error occurred during session creation.', ephemeral: true });
             } else {
-                await interaction.editReply({ content: 'An unexpected error occurred. Please try again.', components: [] });
+                await interaction.editReply({ content: 'An unexpected error occurred. The error has been logged. Please try again.', components: [] });
             }
         }
     },
