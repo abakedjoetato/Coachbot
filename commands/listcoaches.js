@@ -33,6 +33,9 @@ module.exports = {
         description += '\n'; // Add a blank line for spacing
       });
 
+      if (description.length > 4096) {
+          description = description.substring(0, 4000) + '... \n\n*Too many coaches to display.*';
+      }
       embed.setDescription(description);
 
       await interaction.editReply({ embeds: [embed] });
