@@ -49,6 +49,9 @@ module.exports = {
           description += `**Available Coaches:** ${availableCoachNames}\n\n`;
       }
 
+      if (description.length > 4096) {
+        description = description.substring(0, 4000) + '... \n\n*Too many sessions to display.*';
+      }
       embed.setDescription(description);
 
       await interaction.editReply({ embeds: [embed] });

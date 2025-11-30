@@ -3,6 +3,8 @@ const { EmbedBuilder } = require('discord.js');
 const db = require('../database/database');
 const logger = require('./logger');
 
+let isUpdating = false;
+
 async function buildSessionListEmbed() {
     const now = new Date().toISOString();
     const sessions = await db.all(
@@ -27,7 +29,7 @@ async function buildSessionListEmbed() {
         embed.setDescription('There are no available sessions right now. Please check back later!');
     } else {
         let description = 'Use the `/sessions` command to browse and claim a session.\n\n';
-        sessions.forEach(session => {
+        for (const session of sessions) {
             const sessionDate = new Date(session.datetime);
             const dateString = sessionDate.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC', hour12: true });
             const availableCoachIds = JSON.parse(session.availableCoaches);
@@ -36,7 +38,7 @@ async function buildSessionListEmbed() {
             description += `**${session.title}**\n`;
             description += `*${dateString}*\n`;
             description += `Coaches: ${availableCoachNames}\n\n`;
-        });
+        }
         embed.setDescription(description);
     }
 
@@ -44,6 +46,12 @@ async function buildSessionListEmbed() {
 }
 
 async function updateSessionList(client) {
+    if (isUpdating) {
+        logger.info('Session list update already in progress. Skipping.');
+        return;
+    }
+    isUpdating = true;
+
     try {
         const channelIdSetting = await db.get("SELECT value FROM settings WHERE key = 'sessionsChannelId'");
         const messageIdSetting = await db.get("SELECT value FROM settings WHERE key = 'sessionListMessageId'");
@@ -76,11 +84,13 @@ async function updateSessionList(client) {
         } else {
             // Post new message and save its ID
             const newMessage = await channel.send({ embeds: [embed] });
-            await db.run("UPDATE settings SET value = ? WHERE key = 'sessionListMessageId'", [newMessage.id]);
+            await db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('sessionListMessageId', ?)", [newMessage.id]);
             logger.info(`Posted new session list message and saved its ID: ${newMessage.id}`);
         }
     } catch (error) {
         logger.error('Failed to update session list:', error);
+    } finally {
+        isUpdating = false;
     }
 }
 
