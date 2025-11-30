@@ -1,5 +1,5 @@
 // commands/mysessions.js
-const { SlashCommandBuilder, EmbedBuilder, StringSelectMenuBuilder, ActionRowBuilder, ComponentType, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, StringSelectMenuBuilder, ActionRowBuilder, ComponentType, ModalBuilder, TextInputBuilder, TextInputStyle, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType } = require('discord.js');
 const db = require('../database/database');
 const logger = require('../utils/logger');
 
@@ -63,7 +63,114 @@ module.exports = {
           components.push(new ActionRowBuilder().addComponents(selectMenu));
       }
 
-      await interaction.editReply({ embeds: [embed], components });
+      const message = await interaction.editReply({ embeds: [embed], components });
+
+      if (cancellableSessions.length === 0) return;
+
+      const collector = message.createMessageComponentCollector({
+          componentType: ComponentType.StringSelect,
+          time: 120000, // 2 minutes
+          filter: i => i.user.id === interaction.user.id && i.customId === 'cancel_session_select'
+      });
+
+      collector.on('collect', async i => {
+          const sessionIdToCancel = i.values[0];
+
+          const modal = new ModalBuilder()
+              .setCustomId(`cancel_modal_${sessionIdToCancel}`)
+              .setTitle('Cancel Session');
+
+          const reasonInput = new TextInputBuilder()
+              .setCustomId('cancellation_reason')
+              .setLabel("Please provide a reason for cancelling")
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true);
+
+          modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+          await i.showModal(modal);
+
+          const submitted = await i.awaitModalSubmit({
+              time: 120000,
+              filter: submitInteraction => submitInteraction.customId === `cancel_modal_${sessionIdToCancel}` && submitInteraction.user.id === i.user.id,
+          }).catch(() => null);
+
+          if (submitted) {
+              await submitted.deferReply({ ephemeral: true });
+              const reason = submitted.fields.getTextInputValue('cancellation_reason');
+
+              const sessionToCancel = await db.get('SELECT * FROM sessions WHERE id = ?', [sessionIdToCancel]);
+              const coach = await db.get('SELECT * FROM coaches WHERE id = ?', [sessionToCancel.claimedCoach]);
+
+              // Update the database
+              await db.run(
+                  'UPDATE sessions SET isClaimed = 0, claimedBy = NULL, claimedCoach = NULL WHERE id = ?',
+                  [sessionIdToCancel]
+              );
+
+              // Re-create the Guild Scheduled Event
+              if (sessionToCancel.guildScheduledEventId) {
+                  try {
+                      const event = await interaction.guild.scheduledEvents.fetch(sessionToCancel.guildScheduledEventId);
+                      await event.delete();
+                  } catch (eventError) {
+                      logger.error(`Failed to delete scheduled event ${sessionToCancel.guildScheduledEventId}:`, eventError);
+                  }
+              }
+
+              try {
+                  const newEvent = await interaction.guild.scheduledEvents.create({
+                      name: sessionToCancel.title,
+                      scheduledStartTime: sessionToCancel.datetime,
+                      scheduledEndTime: new Date(new Date(sessionToCancel.datetime).getTime() + sessionToCancel.duration_minutes * 60000),
+                      privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
+                      entityType: GuildScheduledEventEntityType.External,
+                      entityMetadata: { location: '1-on-1 Coaching' }
+                  });
+                  await db.run('UPDATE sessions SET guildScheduledEventId = ? WHERE id = ?', [newEvent.id, sessionIdToCancel]);
+              } catch (eventError) {
+                  logger.error(`Failed to create new scheduled event for session ${sessionIdToCancel}:`, eventError);
+              }
+
+              // Notify the coach
+              try {
+                  const coachUser = await interaction.client.users.fetch(coach.discord_id);
+                  await coachUser.send(`**Session Cancelled:** A user has cancelled their session titled "${sessionToCancel.title}" scheduled for ${new Date(sessionToCancel.datetime).toUTCString()}. Reason: ${reason}`);
+              } catch (dmError) {
+                  logger.error(`Failed to DM coach ${coach.name} about cancellation:`, dmError);
+              }
+
+              // Notify the cancellations channel
+              const channelIdSetting = await db.get("SELECT value FROM settings WHERE key = 'cancellationsChannelId'");
+              if (channelIdSetting && channelIdSetting.value) {
+                  try {
+                      const cancellationsChannel = await interaction.client.channels.fetch(channelIdSetting.value);
+                      await cancellationsChannel.send({
+                          embeds: [
+                              new EmbedBuilder()
+                                  .setTitle('Session Cancellation')
+                                  .setDescription(`A session has been cancelled by <@${interaction.user.id}>.`)
+                                  .addFields(
+                                      { name: 'Session', value: sessionToCancel.title, inline: true },
+                                      { name: 'Coach', value: coach.name, inline: true },
+                                      { name: 'Original Time', value: new Date(sessionToCancel.datetime).toUTCString(), inline: false },
+                                      { name: 'Reason', value: reason, inline: false }
+                                  )
+                                  .setColor(0xE74C3C)
+                                  .setTimestamp()
+                          ]
+                      });
+                  } catch (channelError) {
+                      logger.error('Failed to send cancellation notice to channel:', channelError);
+                  }
+              }
+
+              await submitted.editReply({ content: 'Your session has been successfully cancelled.', components: [] });
+          }
+      });
+
+      collector.on('end', () => {
+          interaction.editReply({ components: [] }).catch(() => {});
+      });
 
     } catch (error) {
       logger.error('Error executing mysessions command:', error);

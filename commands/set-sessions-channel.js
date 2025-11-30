@@ -18,6 +18,16 @@ module.exports = {
     try {
       const channel = interaction.options.getChannel('channel');
 
+      const botMember = await interaction.guild.members.fetch(interaction.client.user.id);
+      const permissions = channel.permissionsFor(botMember);
+
+      if (!permissions.has(PermissionsBitField.Flags.ViewChannel) || !permissions.has(PermissionsBitField.Flags.SendMessages) || !permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+        return interaction.reply({
+            content: "I don't have the necessary permissions in that channel. Please grant me `View Channel`, `Send Messages`, and `Manage Messages` permissions and try again.",
+            ephemeral: true,
+        });
+      }
+
       await db.run(
         "INSERT INTO settings (key, value) VALUES ('sessionsChannelId', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [channel.id]
