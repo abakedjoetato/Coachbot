@@ -3,6 +3,8 @@ const { SlashCommandBuilder, PermissionsBitField, StringSelectMenuBuilder, Actio
 const db = require('../database/database');
 const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
+const timezones = require('../utils/timezones');
+const moment = require('moment-timezone');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -53,6 +55,7 @@ module.exports = {
                     if (i.customId.startsWith('month')) {
                         selectedMonth = parseInt(i.values[0], 10);
                     }
+                    i.deferUpdate();
                     if (selectedYear && selectedMonth !== undefined) {
                         dateCollector.stop();
                         resolve(i);
@@ -82,12 +85,20 @@ module.exports = {
             }
             sessionData.date = { year: selectedYear, month: selectedMonth, day };
 
-            // Step 3: Time
-            const hourOptions = Array.from({ length: 24 }, (_, i) => ({ label: `${i.toString().padStart(2, '0')}:00 UTC`, value: i.toString() }));
+            // Step 3: Timezone
+            const timezoneMenu = new StringSelectMenuBuilder().setCustomId(`timezone_${interactionId}`).setPlaceholder('Select your timezone').addOptions(timezones.slice(0, 25));
+            const timezoneMenu2 = new StringSelectMenuBuilder().setCustomId(`timezone2_${interactionId}`).setPlaceholder('...').addOptions(timezones.slice(25, 50));
+            await submittedModal.update({ content: 'Step 3: Please select your timezone.', components: [new ActionRowBuilder().addComponents(timezoneMenu), new ActionRowBuilder().addComponents(timezoneMenu2)] });
+
+            const timezoneSelection = await interaction.channel.awaitMessageComponent({ filter: i => (i.customId === `timezone_${interactionId}` || i.customId === `timezone2_${interactionId}`) && i.user.id === interaction.user.id, time: 60000 });
+            sessionData.timezone = timezoneSelection.values[0];
+
+            // Step 4: Time
+            const hourOptions = Array.from({ length: 24 }, (_, i) => ({ label: `${i.toString().padStart(2, '0')}:00`, value: i.toString() }));
             const minuteOptions = [{ label: '00', value: '0' }, { label: '15', value: '15' }, { label: '30', value: '30' }, { label: '45', value: '45' }];
-            const hourMenu = new StringSelectMenuBuilder().setCustomId(`hour_${interactionId}`).setPlaceholder('Select Hour (UTC)').addOptions(hourOptions);
-            const minuteMenu = new StringSelectMenuBuilder().setCustomId(`minute_${interactionId}`).setPlaceholder('Select Minute (UTC)').addOptions(minuteOptions);
-            await submittedModal.update({ content: 'Step 3: Please select the time for the session (in UTC).', components: [new ActionRowBuilder().addComponents(hourMenu), new ActionRowBuilder().addComponents(minuteMenu)] });
+            const hourMenu = new StringSelectMenuBuilder().setCustomId(`hour_${interactionId}`).setPlaceholder('Select Hour').addOptions(hourOptions);
+            const minuteMenu = new StringSelectMenuBuilder().setCustomId(`minute_${interactionId}`).setPlaceholder('Select Minute').addOptions(minuteOptions);
+            await timezoneSelection.update({ content: 'Step 4: Please select the time for the session.', components: [new ActionRowBuilder().addComponents(hourMenu), new ActionRowBuilder().addComponents(minuteMenu)] });
 
             let selectedHour, selectedMinute;
             const timeCollector = interaction.channel.createMessageComponentCollector({ filter: i => i.user.id === interaction.user.id && (i.customId === `hour_${interactionId}` || i.customId === `minute_${interactionId}`), time: 120000 });
@@ -100,6 +111,7 @@ module.exports = {
                     if (i.customId.startsWith('minute')) {
                         selectedMinute = parseInt(i.values[0], 10);
                     }
+                    i.deferUpdate();
                     if (selectedHour !== undefined && selectedMinute !== undefined) {
                         timeCollector.stop();
                         resolve(i);
@@ -117,7 +129,7 @@ module.exports = {
             }
             sessionData.time = { hour: selectedHour, minute: selectedMinute };
 
-            // Step 4: Title
+            // Step 5: Title
             const titleModal = new ModalBuilder().setCustomId(`title_modal_${interactionId}`).setTitle('Session Title');
             const titleInput = new TextInputBuilder().setCustomId('title').setLabel('Session Title (Optional)').setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder('1-on-1 Coaching Session');
             titleModal.addComponents(new ActionRowBuilder().addComponents(titleInput));
@@ -125,25 +137,31 @@ module.exports = {
             const submittedTitleModal = await collectedTimeInteraction.awaitModalSubmit({ filter: i => i.customId === `title_modal_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
             sessionData.title = submittedTitleModal.fields.getTextInputValue('title') || '1-on-1 Coaching Session';
 
-            // Step 5: Coaches
+            // Step 6: Coaches
             const coachMenu = new StringSelectMenuBuilder().setCustomId(`coach_select_${interactionId}`).setPlaceholder('Assign one or more coaches').setMinValues(1).setMaxValues(coaches.length).addOptions(coaches.map(c => ({ label: c.name, value: c.id.toString() })));
-            await submittedTitleModal.update({ content: 'Step 5: Please assign coaches for this session.', components: [new ActionRowBuilder().addComponents(coachMenu)] });
+            await submittedTitleModal.update({ content: 'Step 6: Please assign coaches for this session.', components: [new ActionRowBuilder().addComponents(coachMenu)] });
 
             const coachSelection = await interaction.channel.awaitMessageComponent({ filter: i => i.customId === `coach_select_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
             sessionData.selectedCoachIds = coachSelection.values;
 
             // Finalization
-            const sessionDateTime = new Date(Date.UTC(sessionData.date.year, sessionData.date.month, sessionData.date.day, sessionData.time.hour, sessionData.time.minute));
+            const sessionDateTime = moment.tz({
+                year: sessionData.date.year,
+                month: sessionData.date.month,
+                day: sessionData.date.day,
+                hour: sessionData.time.hour,
+                minute: sessionData.time.minute
+            }, sessionData.timezone).utc();
 
-            if (sessionDateTime < new Date()) {
+            if (sessionDateTime.isBefore(moment())) {
                 logger.warn(`User ${interaction.user.tag} attempted to create a session in the past for ${sessionDateTime.toISOString()}`);
                 return coachSelection.update({ content: 'You cannot create a session in the past. Please start over and select a future date and time.', components: [] });
             }
 
             const event = await interaction.guild.scheduledEvents.create({
                 name: sessionData.title,
-                scheduledStartTime: sessionDateTime,
-                scheduledEndTime: new Date(sessionDateTime.getTime() + sessionData.duration * 60000),
+                scheduledStartTime: sessionDateTime.toDate(),
+                scheduledEndTime: new Date(sessionDateTime.valueOf() + sessionData.duration * 60000),
                 privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
                 entityType: GuildScheduledEventEntityType.External,
                 entityMetadata: { location: '1-on-1 Coaching' }
