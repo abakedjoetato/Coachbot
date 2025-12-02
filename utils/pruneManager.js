@@ -7,14 +7,10 @@ const ONE_WEEK_IN_MS = PRUNE_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
 
 async function pruneOldSessions() {
     try {
-        const oneWeekAgo = new Date(Date.now() - ONE_WEEK_IN_MS);
-        const oneWeekAgoISO = oneWeekAgo.toISOString();
-
-        logger.info(`Pruning sessions that ended before ${oneWeekAgoISO}...`);
+        logger.info(`Pruning sessions older than ${PRUNE_INTERVAL_DAYS} days...`);
 
         const result = await db.run(
-            `DELETE FROM sessions WHERE datetime < ?`,
-            [oneWeekAgoISO]
+            `DELETE FROM sessions WHERE datetime < datetime('now', '-${PRUNE_INTERVAL_DAYS} days')`
         );
 
         if (result.changes > 0) {

@@ -1,142 +1,184 @@
 // commands/createsession.js
-const { SlashCommandBuilder, PermissionsBitField, StringSelectMenuBuilder, ActionRowBuilder, ComponentType, ModalBuilder, TextInputBuilder, TextInputStyle, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType } = require('discord.js');
+const { SlashCommandBuilder, PermissionsBitField, StringSelectMenuBuilder, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType } = require('discord.js');
 const db = require('../database/database');
 const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
+const moment = require('moment-timezone');
 
 module.exports = {
-  data: new SlashCommandBuilder()
-    .setName('createsession')
-    .setDescription('Creates a new coaching session slot (interactive setup).')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
-  async execute(interaction) {
-    const interactionId = uuidv4();
-    const sessionData = {};
+    data: new SlashCommandBuilder()
+        .setName('createsession')
+        .setDescription('Creates a new coaching session slot (interactive setup).')
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+        .addStringOption(option =>
+            option.setName('timezone')
+                .setDescription('Start typing to search for your timezone.')
+                .setRequired(true)
+                .setAutocomplete(true)),
+    async execute(interaction) {
+        const interactionId = uuidv4();
+        const sessionData = {};
 
-    try {
-        await interaction.deferReply({ ephemeral: true });
+        try {
+            sessionData.timezone = interaction.options.getString('timezone');
+            const coaches = await db.all('SELECT id, name FROM coaches');
+            if (!coaches || coaches.length === 0) {
+                return interaction.reply({ content: 'You must add at least one coach before creating a session. Use `/addcoach`.', ephemeral: true });
+            }
 
-        const coaches = await db.all('SELECT id, name FROM coaches');
-        if (!coaches || coaches.length === 0) {
-            return interaction.editReply({ content: 'You must add at least one coach before creating a session. Use `/addcoach`.' });
-        }
+            // Step 1: Duration
+            const durationOptions = [
+                { label: '30 Minutes', value: '30' },
+                { label: '45 Minutes', value: '45' },
+                { label: '60 Minutes', value: '60' },
+                { label: '90 Minutes', value: '90' },
+            ];
+            const durationMenu = new StringSelectMenuBuilder().setCustomId(`duration_${interactionId}`).setPlaceholder('Select Session Duration').addOptions(durationOptions);
+            await interaction.reply({ content: 'Step 1: Please select the session duration.', components: [new ActionRowBuilder().addComponents(durationMenu)], ephemeral: true });
 
-        // --- Step 1: Duration ---
-        const durationOptions = [
-            { label: '30 Minutes', value: '30' },
-            { label: '45 Minutes', value: '45' },
-            { label: '60 Minutes', value: '60' },
-            { label: '90 Minutes', value: '90' },
-        ];
-        const durationMenu = new StringSelectMenuBuilder().setCustomId(`duration_${interactionId}`).setPlaceholder('Select Session Duration').addOptions(durationOptions);
-        await interaction.editReply({ content: 'Step 1: Please select the session duration.', components: [new ActionRowBuilder().addComponents(durationMenu)] });
-        const durationSelection = await interaction.channel.awaitMessageComponent({ filter: i => i.customId === `duration_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
-        sessionData.duration = parseInt(durationSelection.values[0], 10);
-        await durationSelection.deferUpdate();
+            const durationSelection = await interaction.channel.awaitMessageComponent({ filter: i => i.customId === `duration_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
+            sessionData.duration = parseInt(durationSelection.values[0], 10);
 
-        // --- Step 2: Date (Year, Month, Day) ---
-        const today = new Date();
-        const yearOptions = Array.from({ length: 2 }, (_, i) => ({ label: (today.getFullYear() + i).toString(), value: (today.getFullYear() + i).toString() }));
-        const monthOptions = Array.from({ length: 12 }, (_, i) => ({ label: new Date(0, i).toLocaleString('en', { month: 'long' }), value: (i).toString() }));
-        const yearMenu = new StringSelectMenuBuilder().setCustomId(`year_${interactionId}`).setPlaceholder('Select Year').addOptions(yearOptions);
-        const monthMenu = new StringSelectMenuBuilder().setCustomId(`month_${interactionId}`).setPlaceholder('Select Month').addOptions(monthOptions);
-        await interaction.editReply({ content: 'Step 2: Please select the date for the session.', components: [new ActionRowBuilder().addComponents(yearMenu), new ActionRowBuilder().addComponents(monthMenu)] });
+            // Step 2: Date
+            const today = new Date();
+            const yearOptions = Array.from({ length: 2 }, (_, i) => ({ label: (today.getFullYear() + i).toString(), value: (today.getFullYear() + i).toString() }));
+            const monthOptions = Array.from({ length: 12 }, (_, i) => ({ label: new Date(0, i).toLocaleString('en', { month: 'long' }), value: i.toString() }));
+            const yearMenu = new StringSelectMenuBuilder().setCustomId(`year_${interactionId}`).setPlaceholder('Select Year').addOptions(yearOptions);
+            const monthMenu = new StringSelectMenuBuilder().setCustomId(`month_${interactionId}`).setPlaceholder('Select Month').addOptions(monthOptions);
+            await durationSelection.update({ content: 'Step 2: Please select the date for the session.', components: [new ActionRowBuilder().addComponents(yearMenu), new ActionRowBuilder().addComponents(monthMenu)] });
 
-        let selectedYear, selectedMonth;
-        const dateCollector = interaction.channel.createMessageComponentCollector({ filter: i => i.user.id === interaction.user.id && i.customId.endsWith(interactionId), time: 120000 });
+            let selectedYear, selectedMonth;
+            const dateCollector = interaction.channel.createMessageComponentCollector({ filter: i => i.user.id === interaction.user.id && (i.customId === `year_${interactionId}` || i.customId === `month_${interactionId}`), time: 120000 });
 
-        await new Promise((resolve, reject) => {
-            dateCollector.on('collect', async i => {
-                if (i.customId.startsWith('year')) selectedYear = parseInt(i.values[0], 10);
-                if (i.customId.startsWith('month')) selectedMonth = parseInt(i.values[0], 10);
-                await i.deferUpdate();
-                if (selectedYear && selectedMonth !== undefined) dateCollector.stop();
+            const collectedDateInteraction = await new Promise((resolve) => {
+                dateCollector.on('collect', async i => {
+                    if (i.customId.startsWith('year')) {
+                        selectedYear = parseInt(i.values[0], 10);
+                    }
+                    if (i.customId.startsWith('month')) {
+                        selectedMonth = parseInt(i.values[0], 10);
+                    }
+                    if (selectedYear && selectedMonth !== undefined) {
+                        dateCollector.stop();
+                        resolve(i);
+                    } else {
+                        i.deferUpdate();
+                    }
+                });
+                dateCollector.on('end', (collected, reason) => {
+                    if (reason === 'time') {
+                        resolve(null);
+                    }
+                });
             });
-            dateCollector.on('end', collected => collected.size > 0 ? resolve() : reject(new Error('Date selection timed out.')));
-        });
 
-        sessionData.year = selectedYear;
-        sessionData.month = selectedMonth;
+            if (!collectedDateInteraction) {
+                return interaction.editReply({ content: 'You did not make a selection in time. Please start over.', components: [] });
+            }
 
-        const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
-        const dayOptions = Array.from({ length: daysInMonth }, (_, i) => ({ label: (i + 1).toString(), value: (i + 1).toString() }));
-        const dayMenu = new StringSelectMenuBuilder().setCustomId(`day_${interactionId}`).setPlaceholder('Select Day').addOptions(dayOptions.slice(0,25));
-        const dayMenu2 = daysInMonth > 25 ? new StringSelectMenuBuilder().setCustomId(`day2_${interactionId}`).setPlaceholder('...').addOptions(dayOptions.slice(25)) : null;
-        const dayComponents = [new ActionRowBuilder().addComponents(dayMenu)];
-        if (dayMenu2) dayComponents.push(new ActionRowBuilder().addComponents(dayMenu2));
+            const modal = new ModalBuilder().setCustomId(`day_modal_${interactionId}`).setTitle('Enter the Day');
+            const dayInput = new TextInputBuilder().setCustomId('day').setLabel('Day of the month (e.g., 1, 15, 31)').setStyle(TextInputStyle.Short).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(dayInput));
+            await collectedDateInteraction.showModal(modal);
+            const submittedModal = await collectedDateInteraction.awaitModalSubmit({ filter: i => i.customId === `day_modal_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
 
-        await interaction.editReply({ content: 'Please select the day.', components: dayComponents });
-        const daySelection = await interaction.channel.awaitMessageComponent({ filter: i => (i.customId === `day_${interactionId}` || i.customId === `day2_${interactionId}`) && i.user.id === interaction.user.id, time: 60000 });
-        sessionData.day = parseInt(daySelection.values[0], 10);
-        await daySelection.deferUpdate();
+            const day = parseInt(submittedModal.fields.getTextInputValue('day'), 10);
+            const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+            if (isNaN(day) || day < 1 || day > daysInMonth) {
+                return submittedModal.reply({ content: `Invalid day. Please enter a number between 1 and ${daysInMonth}.`, ephemeral: true });
+            }
+            sessionData.date = { year: selectedYear, month: selectedMonth, day };
 
-        // --- Step 3: Time (Hour, Minute) ---
-        const hourOptions = Array.from({ length: 24 }, (_, i) => ({ label: `${i.toString().padStart(2, '0')}:00 UTC`, value: i.toString() }));
-        const minuteOptions = [{label: '00', value: '0'}, {label: '15', value: '15'}, {label: '30', value: '30'}, {label: '45', value: '45'}];
-        const hourMenu = new StringSelectMenuBuilder().setCustomId(`hour_${interactionId}`).setPlaceholder('Select Hour (UTC)').addOptions(hourOptions);
-        const minuteMenu = new StringSelectMenuBuilder().setCustomId(`minute_${interactionId}`).setPlaceholder('Select Minute (UTC)').addOptions(minuteOptions);
-        await interaction.editReply({ content: 'Step 3: Please select the time for the session (in UTC).', components: [new ActionRowBuilder().addComponents(hourMenu), new ActionRowBuilder().addComponents(minuteMenu)]});
+            // Step 3: Time
+            const hourOptions = Array.from({ length: 24 }, (_, i) => ({ label: `${i.toString().padStart(2, '0')}:00`, value: i.toString() }));
+            const minuteOptions = [{ label: '00', value: '0' }, { label: '15', value: '15' }, { label: '30', value: '30' }, { label: '45', value: '45' }];
+            const hourMenu = new StringSelectMenuBuilder().setCustomId(`hour_${interactionId}`).setPlaceholder('Select Hour').addOptions(hourOptions);
+            const minuteMenu = new StringSelectMenuBuilder().setCustomId(`minute_${interactionId}`).setPlaceholder('Select Minute').addOptions(minuteOptions);
+            await submittedModal.update({ content: `Step 3: Please select the time for the session (in your selected timezone: ${sessionData.timezone}).`, components: [new ActionRowBuilder().addComponents(hourMenu), new ActionRowBuilder().addComponents(minuteMenu)] });
 
-        let selectedHour, selectedMinute;
-        const timeCollector = interaction.channel.createMessageComponentCollector({ filter: i => i.user.id === interaction.user.id && i.customId.endsWith(interactionId), time: 120000 });
+            let selectedHour, selectedMinute;
+            const timeCollector = interaction.channel.createMessageComponentCollector({ filter: i => i.user.id === interaction.user.id && (i.customId === `hour_${interactionId}` || i.customId === `minute_${interactionId}`), time: 120000 });
 
-        await new Promise((resolve, reject) => {
-            timeCollector.on('collect', async i => {
-                if (i.customId.startsWith('hour')) selectedHour = parseInt(i.values[0], 10);
-                if (i.customId.startsWith('minute')) selectedMinute = parseInt(i.values[0], 10);
-                await i.deferUpdate();
-                if (selectedHour !== undefined && selectedMinute !== undefined) timeCollector.stop();
+            const collectedTimeInteraction = await new Promise((resolve) => {
+                timeCollector.on('collect', async i => {
+                    if (i.customId.startsWith('hour')) {
+                        selectedHour = parseInt(i.values[0], 10);
+                    }
+                    if (i.customId.startsWith('minute')) {
+                        selectedMinute = parseInt(i.values[0], 10);
+                    }
+                    if (selectedHour !== undefined && selectedMinute !== undefined) {
+                        timeCollector.stop();
+                        resolve(i);
+                    } else {
+                        i.deferUpdate();
+                    }
+                });
+                timeCollector.on('end', (collected, reason) => {
+                    if (reason === 'time') {
+                        resolve(null);
+                    }
+                });
             });
-            timeCollector.on('end', collected => collected.size > 0 ? resolve() : reject(new Error('Time selection timed out.')));
-        });
 
-        sessionData.hour = selectedHour;
-        sessionData.minute = selectedMinute;
+            if (!collectedTimeInteraction) {
+                return interaction.editReply({ content: 'You did not make a selection in time. Please start over.', components: [] });
+            }
+            sessionData.time = { hour: selectedHour, minute: selectedMinute };
 
-        // --- Step 4: Title Modal ---
-        const modal = new ModalBuilder().setCustomId(`title_modal_${interactionId}`).setTitle('Session Title');
-        const titleInput = new TextInputBuilder().setCustomId('title').setLabel('Session Title (Optional)').setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder('1-on-1 Coaching Session');
-        modal.addComponents(new ActionRowBuilder().addComponents(titleInput));
-        await interaction.showModal(modal);
-        const submittedModal = await interaction.awaitModalSubmit({ filter: i => i.customId === `title_modal_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
-        sessionData.title = submittedModal.fields.getTextInputValue('title') || '1-on-1 Coaching Session';
-        await submittedModal.deferUpdate();
+            // Step 4: Title
+            const titleModal = new ModalBuilder().setCustomId(`title_modal_${interactionId}`).setTitle('Session Title');
+            const titleInput = new TextInputBuilder().setCustomId('title').setLabel('Session Title (Optional)').setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder('1-on-1 Coaching Session');
+            titleModal.addComponents(new ActionRowBuilder().addComponents(titleInput));
+            await collectedTimeInteraction.showModal(titleModal);
+            const submittedTitleModal = await collectedTimeInteraction.awaitModalSubmit({ filter: i => i.customId === `title_modal_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
+            sessionData.title = submittedTitleModal.fields.getTextInputValue('title') || '1-on-1 Coaching Session';
 
-        // --- Step 5: Coach Selection ---
-        const coachMenu = new StringSelectMenuBuilder().setCustomId(`coach_select_${interactionId}`).setPlaceholder('Assign one or more coaches').setMinValues(1).setMaxValues(coaches.length).addOptions(coaches.map(c => ({ label: c.name, value: c.id.toString() })));
-        await interaction.editReply({ content: 'Step 4: Please assign coaches for this session.', components: [new ActionRowBuilder().addComponents(coachMenu)] });
-        const coachSelection = await interaction.channel.awaitMessageComponent({ filter: i => i.customId === `coach_select_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
-        sessionData.selectedCoachIds = coachSelection.values;
-        await coachSelection.deferUpdate();
+            // Step 5: Coaches
+            const coachMenu = new StringSelectMenuBuilder().setCustomId(`coach_select_${interactionId}`).setPlaceholder('Assign one or more coaches').setMinValues(1).setMaxValues(coaches.length).addOptions(coaches.map(c => ({ label: c.name, value: c.id.toString() })));
+            await submittedTitleModal.update({ content: 'Step 5: Please assign coaches for this session.', components: [new ActionRowBuilder().addComponents(coachMenu)] });
 
-        // --- Finalization ---
-        const sessionDateTime = new Date(Date.UTC(sessionData.year, sessionData.month, sessionData.day, sessionData.hour, sessionData.minute));
+            const coachSelection = await interaction.channel.awaitMessageComponent({ filter: i => i.customId === `coach_select_${interactionId}` && i.user.id === interaction.user.id, time: 60000 });
+            sessionData.selectedCoachIds = coachSelection.values;
 
-        const event = await interaction.guild.scheduledEvents.create({
-            name: sessionData.title,
-            scheduledStartTime: sessionDateTime,
-            scheduledEndTime: new Date(sessionDateTime.getTime() + sessionData.duration * 60000),
-            privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
-            entityType: GuildScheduledEventEntityType.External,
-            entityMetadata: { location: '1-on-1 Coaching' }
-        });
+            // Finalization
+            const sessionDateTime = moment.tz({
+                year: sessionData.date.year,
+                month: sessionData.date.month,
+                day: sessionData.date.day,
+                hour: sessionData.time.hour,
+                minute: sessionData.time.minute
+            }, sessionData.timezone).utc();
 
-        await db.run(
-            `INSERT INTO sessions (datetime, duration_minutes, title, availableCoaches, guildScheduledEventId) VALUES (?, ?, ?, ?, ?)`,
-            [sessionDateTime.toISOString(), sessionData.duration, sessionData.title, JSON.stringify(sessionData.selectedCoachIds), event.id]
-        );
+            if (sessionDateTime.isBefore(moment())) {
+                logger.warn(`User ${interaction.user.tag} attempted to create a session in the past for ${sessionDateTime.toISOString()}`);
+                return coachSelection.update({ content: 'You cannot create a session in the past. Please start over and select a future date and time.', components: [] });
+            }
 
-        logger.info(`Session created by ${interaction.user.tag}: ${sessionData.title} at ${sessionDateTime.toISOString()}`);
-        await interaction.editReply({ content: '✅ Successfully created the new coaching session and scheduled the event!', components: [] });
+            const event = await interaction.guild.scheduledEvents.create({
+                name: sessionData.title,
+                scheduledStartTime: sessionDateTime.toDate(),
+                scheduledEndTime: new Date(sessionDateTime.valueOf() + sessionData.duration * 60000),
+                privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
+                entityType: GuildScheduledEventEntityType.External,
+                entityMetadata: { location: '1-on-1 Coaching' }
+            });
 
-    } catch (error) {
-        logger.error('Error in /createsession command:', error);
-        // Avoid leaking implementation details to the user
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: 'An unexpected error occurred during session creation.', ephemeral: true });
-        } else {
-            await interaction.editReply({ content: 'An unexpected error occurred. Please try again.', components: [] });
+            await db.run(
+                `INSERT INTO sessions (datetime, duration_minutes, title, availableCoaches, guildScheduledEventId) VALUES (?, ?, ?, ?, ?)`,
+                [sessionDateTime.toISOString(), sessionData.duration, sessionData.title, JSON.stringify(sessionData.selectedCoachIds), event.id]
+            );
+
+            logger.info(`Session created by ${interaction.user.tag}: ${sessionData.title} at ${sessionDateTime.toISOString()}`);
+            await coachSelection.update({ content: '✅ Successfully created the new coaching session and scheduled the event!', components: [] });
+
+        } catch (error) {
+            logger.error({ msg: 'Error in /createsession command', error, user: interaction.user.tag, guild: interaction.guild.id });
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: 'An unexpected error occurred during session creation.', ephemeral: true });
+            } else {
+                await interaction.editReply({ content: 'An unexpected error occurred. The error has been logged. Please try again.', components: [] });
+            }
         }
-    }
-  },
+    },
 };
