@@ -71,8 +71,8 @@ module.exports = {
           [user.tag, description, discordId]
         );
 
-        logger.info(`New coach added by ${submitted.user.tag}: ${user.tag} (${discordId})`);
-        await submitted.editReply({ content: `Successfully added ${user.tag} as a new coach.` });
+        logger.info(`New coach added by ${submitted.user.tag}: <@${user.id}> (${discordId})`);
+        await submitted.editReply({ content: `Successfully added <@${user.id}> as a new coach.` });
       }
 
     } catch (error) {

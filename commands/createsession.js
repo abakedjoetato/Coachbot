@@ -55,10 +55,11 @@ module.exports = {
                     if (i.customId.startsWith('month')) {
                         selectedMonth = parseInt(i.values[0], 10);
                     }
-                    i.deferUpdate();
                     if (selectedYear && selectedMonth !== undefined) {
                         dateCollector.stop();
                         resolve(i);
+                    } else {
+                        i.deferUpdate();
                     }
                 });
                 dateCollector.on('end', (collected, reason) => {
@@ -111,10 +112,11 @@ module.exports = {
                     if (i.customId.startsWith('minute')) {
                         selectedMinute = parseInt(i.values[0], 10);
                     }
-                    i.deferUpdate();
                     if (selectedHour !== undefined && selectedMinute !== undefined) {
                         timeCollector.stop();
                         resolve(i);
+                    } else {
+                        i.deferUpdate();
                     }
                 });
                 timeCollector.on('end', (collected, reason) => {
