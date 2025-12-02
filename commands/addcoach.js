@@ -68,7 +68,7 @@ module.exports = {
         // Add the coach to the database
         await db.run(
           'INSERT INTO coaches (name, description, discord_id) VALUES (?, ?, ?)',
-          [user.username, description, discordId]
+          [user.tag, description, discordId]
         );
 
         logger.info(`New coach added by ${submitted.user.tag}: <@${user.id}> (${discordId})`);
